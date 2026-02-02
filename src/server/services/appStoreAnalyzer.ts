@@ -479,8 +479,8 @@ export async function analyzeAppStoreCompetition(
 
   console.log(
     `[AppStoreAnalyzer] "${keyword}": iOS=${apps.length}, Est.Total=${breakdown.totalEstimatedApps}, ` +
-      `Score=${competitionScore} (count=${breakdown.appCountScore}, quality=${breakdown.qualityScore}, ` +
-      `maturity=${breakdown.maturityScore}, barrier=${breakdown.barrierScore}), opportunity=${opportunity}`
+    `Score=${competitionScore} (count=${breakdown.appCountScore}, quality=${breakdown.qualityScore}, ` +
+    `maturity=${breakdown.maturityScore}, barrier=${breakdown.barrierScore}), opportunity=${opportunity}`
   );
 
   return {

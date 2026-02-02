@@ -3,7 +3,11 @@ import type { AnalysisSnapshot, Keyword } from '../../shared/types';
 import { getAllKeywords, getHighOpportunityKeywords, getLatestAnalysis } from '../db';
 import { analyzeKeyword, isHighOpportunity } from '../services/opportunityScorer';
 import { closeBrowser } from '../services/serpAnalyzer';
-import { discoverKeywords, expandKeyword } from '../services/trendsFetcher';
+import {
+  APP_SEED_KEYWORDS,
+  discoverAppIdeasByCategory,
+  discoverFromSeed,
+} from '../services/appIdeaDiscovery';
 
 // Store for new opportunities (for alerts)
 const newOpportunities: Array<{ keyword: Keyword; analysis: AnalysisSnapshot }> = [];
@@ -17,27 +21,31 @@ export function clearNewOpportunities() {
 }
 
 /**
- * Job: Discover new trending keywords
+ * Job: Discover new app ideas (NOT daily trends/news)
  * Runs every 6 hours
+ * Rotates through app categories to find new opportunities
  */
-async function discoverKeywordsJob() {
-  console.log('[Scheduler] Starting keyword discovery job...');
+async function discoverAppIdeasJob() {
+  console.log('[Scheduler] Starting app idea discovery job...');
 
   try {
-    // Discover from multiple regions
-    const regions = ['US', 'GB', 'CA'];
+    // Rotate through categories - pick 2 random ones each run
+    const categories = Object.keys(APP_SEED_KEYWORDS) as Array<keyof typeof APP_SEED_KEYWORDS>;
+    const shuffled = categories.sort(() => Math.random() - 0.5);
+    const selectedCategories = shuffled.slice(0, 2);
 
-    for (const geo of regions) {
-      console.log(`[Scheduler] Discovering keywords for region: ${geo}`);
-      await discoverKeywords({ geo });
+    for (const category of selectedCategories) {
+      console.log(`[Scheduler] Discovering app ideas in category: ${category}`);
+      const keywords = await discoverAppIdeasByCategory(category, 'US');
+      console.log(`[Scheduler] Found ${keywords.length} app ideas in ${category}`);
 
-      // Rate limit between regions
+      // Rate limit between categories
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }
 
-    console.log('[Scheduler] Keyword discovery job completed');
+    console.log('[Scheduler] App idea discovery job completed');
   } catch (error) {
-    console.error('[Scheduler] Error in keyword discovery job:', error);
+    console.error('[Scheduler] Error in app idea discovery job:', error);
   }
 }
 
@@ -105,21 +113,27 @@ async function analyzeKeywordsJob() {
 }
 
 /**
- * Job: Expand high-opportunity keywords to find related long-tail keywords
+ * Job: Expand high-opportunity app keywords to find related ideas
  * Runs daily
  */
 async function expandKeywordsJob() {
   console.log('[Scheduler] Starting keyword expansion job...');
 
   try {
-    const highOpportunity = getHighOpportunityKeywords(60, 10);
+    const highOpportunity = getHighOpportunityKeywords(50, 10);
 
     for (const { keyword } of highOpportunity) {
-      console.log(`[Scheduler] Expanding keyword: "${keyword.keyword}"`);
-      await expandKeyword(keyword.keyword);
+      // Only expand app-related keywords
+      if (keyword.source !== 'app_idea') {
+        console.log(`[Scheduler] Skipping non-app keyword: "${keyword.keyword}"`);
+        continue;
+      }
+
+      console.log(`[Scheduler] Expanding app idea: "${keyword.keyword}"`);
+      await discoverFromSeed(keyword.keyword, 'US');
 
       // Rate limit
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await new Promise((resolve) => setTimeout(resolve, 5000));
     }
 
     console.log('[Scheduler] Keyword expansion job completed');
@@ -153,9 +167,9 @@ let cleanupTask: cron.ScheduledTask | null = null;
 export function startScheduler() {
   console.log('[Scheduler] Starting scheduled jobs...');
 
-  // Run keyword discovery every 6 hours
+  // Run app idea discovery every 6 hours (NOT daily trends!)
   // Cron: 0 */6 * * *
-  discoveryTask = cron.schedule('0 */6 * * *', discoverKeywordsJob, {
+  discoveryTask = cron.schedule('0 */6 * * *', discoverAppIdeasJob, {
     scheduled: true,
     timezone: 'UTC',
   });
@@ -181,7 +195,7 @@ export function startScheduler() {
     timezone: 'UTC',
   });
 
-  console.log('[Scheduler] All jobs scheduled');
+  console.log('[Scheduler] All jobs scheduled (App Ideas only, no Daily Trends)');
 }
 
 /**
@@ -202,7 +216,7 @@ export function stopScheduler() {
  * Run jobs manually (for testing/on-demand)
  */
 export async function runDiscoveryNow() {
-  await discoverKeywordsJob();
+  await discoverAppIdeasJob();
 }
 
 export async function runAnalysisNow() {
@@ -211,4 +225,12 @@ export async function runAnalysisNow() {
 
 export async function runExpansionNow() {
   await expandKeywordsJob();
+}
+
+/**
+ * Discover app ideas for a specific category (manual trigger)
+ */
+export async function runCategoryDiscovery(category: keyof typeof APP_SEED_KEYWORDS) {
+  console.log(`[Scheduler] Manual discovery for category: ${category}`);
+  return await discoverAppIdeasByCategory(category, 'US');
 }
