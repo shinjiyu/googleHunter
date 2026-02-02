@@ -92,8 +92,8 @@ export async function analyzeKeyword(
     let competitionScore: number;
     let appStoreData: AppStoreCompetition | null = null;
 
-    // Check if keyword is app-related
-    const isAppKeyword = isAppRelatedKeyword(keyword.keyword);
+    // Check if keyword is app-related (also check source)
+    const isAppKeyword = isAppRelatedKeyword(keyword.keyword) || keyword.source === 'app_idea';
 
     if (isAppKeyword) {
       // Use App Store competition as primary metric
