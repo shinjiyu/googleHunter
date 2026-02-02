@@ -1,0 +1,22 @@
+# Google Trends API Library Dependencies
+# Install: pip install -r requirements-trends.txt
+
+# HTTP client (for protocol simulation)
+httpx>=0.25.0
+
+# Browser automation (for fallback and capture)
+playwright>=1.40.0
+
+# Async support
+asyncio-compat>=0.1.0
+
+# Data handling (optional, for analysis)
+pandas>=2.0
+numpy>=1.25
+matplotlib>=3.8
+
+# Development/Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# After install, run: playwright install chromium

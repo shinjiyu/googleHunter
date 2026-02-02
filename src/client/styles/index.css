@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gray-50 text-gray-900 antialiased;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-100;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-400;
+}
+
+/* Card hover effect */
+.card-hover {
+  @apply transition-all duration-200;
+}
+
+.card-hover:hover {
+  @apply shadow-lg -translate-y-0.5;
+}
+
+/* Score badge colors */
+.score-high {
+  @apply bg-green-100 text-green-800;
+}
+
+.score-medium {
+  @apply bg-yellow-100 text-yellow-800;
+}
+
+.score-low {
+  @apply bg-red-100 text-red-800;
+}
+
+/* Trend indicators */
+.trend-rising {
+  @apply text-green-600;
+}
+
+.trend-stable {
+  @apply text-gray-500;
+}
+
+.trend-declining {
+  @apply text-red-500;
+}
