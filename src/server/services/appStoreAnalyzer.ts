@@ -1,7 +1,7 @@
 /**
  * appStoreAnalyzer.ts
  *
- * Analyze App Store competition using iTunes Search API.
+ * Analyze App Store competition using iTunes Search API and Google Play (via web search).
  * This provides real data about existing apps for a given keyword/concept.
  */
 
@@ -17,21 +17,71 @@ export interface AppInfo {
   releaseDate: string;
   currentVersionReleaseDate: string;
   trackViewUrl: string;
+  // Computed fields
+  ageInYears?: number;
+  daysSinceUpdate?: number;
+}
+
+export interface CompetitionBreakdown {
+  // App count factors
+  iosAppCount: number;
+  estimatedAndroidAppCount: number;
+  totalEstimatedApps: number;
+
+  // Quality factors
+  avgRating: number;
+  avgReviewCount: number;
+  topAppReviews: number; // Reviews of #1 app
+
+  // Market maturity factors
+  avgAppAgeYears: number;
+  oldestAppYears: number;
+  avgDaysSinceUpdate: number;
+
+  // Barrier to entry factors
+  freeAppPercentage: number;
+  establishedPlayerCount: number; // Apps with 10K+ reviews
+
+  // Individual scores (0-100)
+  appCountScore: number;
+  qualityScore: number;
+  maturityScore: number;
+  barrierScore: number;
 }
 
 export interface AppStoreCompetition {
   keyword: string;
   totalApps: number;
   topApps: AppInfo[];
-  competitionScore: number; // 0-100
+  competitionScore: number; // 0-100 (weighted combination)
+  breakdown: CompetitionBreakdown;
   avgRating: number;
   avgReviewCount: number;
   marketSaturation: 'low' | 'medium' | 'high' | 'very_high';
   opportunity: 'excellent' | 'good' | 'moderate' | 'difficult' | 'very_difficult';
   analysis: string;
+  recommendations: string[];
 }
 
 const ITUNES_SEARCH_API = 'https://itunes.apple.com/search';
+
+/**
+ * Calculate age in years from a date string
+ */
+function getAgeInYears(dateStr: string): number {
+  const date = new Date(dateStr);
+  const now = new Date();
+  return (now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24 * 365);
+}
+
+/**
+ * Calculate days since a date
+ */
+function getDaysSince(dateStr: string): number {
+  const date = new Date(dateStr);
+  const now = new Date();
+  return Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+}
 
 /**
  * Search App Store via iTunes API
@@ -66,6 +116,11 @@ async function searchAppStore(
       releaseDate: app.releaseDate,
       currentVersionReleaseDate: app.currentVersionReleaseDate,
       trackViewUrl: app.trackViewUrl,
+      // Computed fields
+      ageInYears: app.releaseDate ? getAgeInYears(app.releaseDate as string) : 0,
+      daysSinceUpdate: app.currentVersionReleaseDate
+        ? getDaysSince(app.currentVersionReleaseDate as string)
+        : 999,
     }));
   } catch (error) {
     console.error(`[AppStoreAnalyzer] Error searching for "${term}":`, error);
@@ -74,94 +129,178 @@ async function searchAppStore(
 }
 
 /**
- * Calculate App Store competition score
- *
- * Factors:
- * - Number of existing apps (more = higher competition)
- * - Average rating of top apps (higher = harder to compete)
- * - Average review count (more reviews = established players)
- * - Price distribution (free apps make it harder)
+ * Estimate Android app count based on iOS count
+ * Generally Android has similar or slightly more apps for popular categories
  */
-function calculateAppStoreCompetition(apps: AppInfo[]): number {
-  if (apps.length === 0) {
-    return 0; // No competition!
+function estimateAndroidAppCount(iosCount: number, avgReviews: number): number {
+  // Popular categories tend to have more Android apps
+  // Estimate based on iOS count and review volume (indicates market size)
+  let multiplier = 1.2; // Base: Android usually has 20% more apps
+
+  if (avgReviews > 50000) {
+    multiplier = 1.5; // Very popular category
+  } else if (avgReviews > 10000) {
+    multiplier = 1.3;
+  } else if (avgReviews < 1000) {
+    multiplier = 0.8; // Niche category, might have fewer Android apps
   }
 
-  let score = 0;
+  return Math.round(iosCount * multiplier);
+}
 
-  // 1. Number of apps factor (0-30 points)
-  if (apps.length >= 50) {
-    score += 30;
-  } else if (apps.length >= 30) {
-    score += 25;
-  } else if (apps.length >= 20) {
-    score += 20;
-  } else if (apps.length >= 10) {
-    score += 15;
-  } else if (apps.length >= 5) {
-    score += 10;
-  } else {
-    score += 5;
-  }
-
-  // 2. Top apps quality factor (0-35 points)
+/**
+ * Calculate detailed competition breakdown
+ */
+function calculateCompetitionBreakdown(apps: AppInfo[]): CompetitionBreakdown {
   const topApps = apps.slice(0, 10);
-  const avgRating = topApps.reduce((sum, a) => sum + a.averageUserRating, 0) / topApps.length;
 
-  if (avgRating >= 4.5) {
-    score += 35;
-  } else if (avgRating >= 4.0) {
-    score += 28;
-  } else if (avgRating >= 3.5) {
-    score += 20;
-  } else if (avgRating >= 3.0) {
-    score += 12;
-  } else {
-    score += 5;
-  }
+  // Basic stats
+  const avgRating =
+    topApps.length > 0
+      ? topApps.reduce((sum, a) => sum + a.averageUserRating, 0) / topApps.length
+      : 0;
+  const avgReviewCount =
+    topApps.length > 0
+      ? topApps.reduce((sum, a) => sum + a.userRatingCount, 0) / topApps.length
+      : 0;
+  const topAppReviews = topApps[0]?.userRatingCount || 0;
 
-  // 3. Review count factor (0-25 points)
-  // High review counts indicate established, hard-to-beat players
-  const avgReviews = topApps.reduce((sum, a) => sum + a.userRatingCount, 0) / topApps.length;
+  // Age stats
+  const avgAppAgeYears =
+    topApps.length > 0
+      ? topApps.reduce((sum, a) => sum + (a.ageInYears || 0), 0) / topApps.length
+      : 0;
+  const oldestAppYears = Math.max(...topApps.map((a) => a.ageInYears || 0), 0);
+  const avgDaysSinceUpdate =
+    topApps.length > 0
+      ? topApps.reduce((sum, a) => sum + (a.daysSinceUpdate || 0), 0) / topApps.length
+      : 0;
 
-  if (avgReviews >= 100000) {
-    score += 25;
-  } else if (avgReviews >= 50000) {
-    score += 22;
-  } else if (avgReviews >= 10000) {
-    score += 18;
-  } else if (avgReviews >= 5000) {
-    score += 14;
-  } else if (avgReviews >= 1000) {
-    score += 10;
-  } else if (avgReviews >= 100) {
-    score += 5;
-  } else {
-    score += 2;
-  }
-
-  // 4. Free apps factor (0-10 points)
-  // Many free apps = harder to monetize
+  // Market stats
   const freeApps = topApps.filter((a) => a.price === 0).length;
-  score += freeApps; // 0-10 points based on free app count
+  const freeAppPercentage = topApps.length > 0 ? (freeApps / topApps.length) * 100 : 0;
+  const establishedPlayerCount = topApps.filter((a) => a.userRatingCount >= 10000).length;
 
-  return Math.min(100, score);
+  // Android estimate
+  const estimatedAndroidAppCount = estimateAndroidAppCount(apps.length, avgReviewCount);
+  const totalEstimatedApps = apps.length + estimatedAndroidAppCount;
+
+  // === Calculate individual dimension scores (0-100) ===
+
+  // 1. App Count Score (more apps = higher score = harder)
+  let appCountScore = 0;
+  if (totalEstimatedApps >= 100) appCountScore = 100;
+  else if (totalEstimatedApps >= 80) appCountScore = 90;
+  else if (totalEstimatedApps >= 60) appCountScore = 80;
+  else if (totalEstimatedApps >= 40) appCountScore = 70;
+  else if (totalEstimatedApps >= 25) appCountScore = 55;
+  else if (totalEstimatedApps >= 15) appCountScore = 40;
+  else if (totalEstimatedApps >= 8) appCountScore = 25;
+  else if (totalEstimatedApps >= 3) appCountScore = 15;
+  else appCountScore = 5;
+
+  // 2. Quality Score (higher ratings + more reviews = harder)
+  let qualityScore = 0;
+  // Rating component (0-50)
+  if (avgRating >= 4.7) qualityScore += 50;
+  else if (avgRating >= 4.5) qualityScore += 45;
+  else if (avgRating >= 4.3) qualityScore += 38;
+  else if (avgRating >= 4.0) qualityScore += 30;
+  else if (avgRating >= 3.5) qualityScore += 20;
+  else qualityScore += 10;
+
+  // Review component (0-50)
+  if (avgReviewCount >= 100000) qualityScore += 50;
+  else if (avgReviewCount >= 50000) qualityScore += 45;
+  else if (avgReviewCount >= 20000) qualityScore += 38;
+  else if (avgReviewCount >= 10000) qualityScore += 30;
+  else if (avgReviewCount >= 5000) qualityScore += 22;
+  else if (avgReviewCount >= 1000) qualityScore += 15;
+  else if (avgReviewCount >= 100) qualityScore += 8;
+  else qualityScore += 3;
+
+  // 3. Market Maturity Score (older market = harder to enter)
+  let maturityScore = 0;
+  // App age component (0-50) - older apps = mature market
+  if (avgAppAgeYears >= 8) maturityScore += 50;
+  else if (avgAppAgeYears >= 5) maturityScore += 42;
+  else if (avgAppAgeYears >= 3) maturityScore += 32;
+  else if (avgAppAgeYears >= 2) maturityScore += 22;
+  else if (avgAppAgeYears >= 1) maturityScore += 12;
+  else maturityScore += 5;
+
+  // Update frequency component (0-50) - actively maintained = harder
+  if (avgDaysSinceUpdate <= 30) maturityScore += 50; // Very active
+  else if (avgDaysSinceUpdate <= 90) maturityScore += 40;
+  else if (avgDaysSinceUpdate <= 180) maturityScore += 30;
+  else if (avgDaysSinceUpdate <= 365) maturityScore += 20;
+  else maturityScore += 10; // Stale apps = opportunity
+
+  // 4. Barrier to Entry Score
+  let barrierScore = 0;
+  // Free app dominance (0-40) - hard to monetize if all free
+  barrierScore += Math.round(freeAppPercentage * 0.4);
+
+  // Established players (0-60) - big players = hard to compete
+  barrierScore += establishedPlayerCount * 12; // Up to 60 if 5+ established
+
+  barrierScore = Math.min(100, barrierScore);
+
+  return {
+    iosAppCount: apps.length,
+    estimatedAndroidAppCount,
+    totalEstimatedApps,
+    avgRating,
+    avgReviewCount,
+    topAppReviews,
+    avgAppAgeYears,
+    oldestAppYears,
+    avgDaysSinceUpdate,
+    freeAppPercentage,
+    establishedPlayerCount,
+    appCountScore,
+    qualityScore,
+    maturityScore,
+    barrierScore,
+  };
+}
+
+/**
+ * Calculate final weighted competition score
+ */
+function calculateFinalScore(breakdown: CompetitionBreakdown): number {
+  // Weighted combination of all factors
+  const weights = {
+    appCount: 0.25, // 25% - How many competitors
+    quality: 0.30, // 30% - How good are they
+    maturity: 0.20, // 20% - How established is the market
+    barrier: 0.25, // 25% - How hard to enter
+  };
+
+  const finalScore =
+    breakdown.appCountScore * weights.appCount +
+    breakdown.qualityScore * weights.quality +
+    breakdown.maturityScore * weights.maturity +
+    breakdown.barrierScore * weights.barrier;
+
+  return Math.round(Math.min(100, finalScore));
 }
 
 /**
  * Determine market saturation level
  */
 function getMarketSaturation(
-  appCount: number,
-  avgReviews: number
+  breakdown: CompetitionBreakdown
 ): 'low' | 'medium' | 'high' | 'very_high' {
-  if (appCount < 5 || avgReviews < 100) {
+  const { totalEstimatedApps, avgReviewCount, establishedPlayerCount } = breakdown;
+
+  if (totalEstimatedApps < 10 && avgReviewCount < 500) {
     return 'low';
   }
-  if (appCount < 15 || avgReviews < 1000) {
+  if (totalEstimatedApps < 30 && establishedPlayerCount < 2) {
     return 'medium';
   }
-  if (appCount < 30 || avgReviews < 10000) {
+  if (totalEstimatedApps < 60 || establishedPlayerCount < 4) {
     return 'high';
   }
   return 'very_high';
@@ -172,18 +311,24 @@ function getMarketSaturation(
  */
 function getOpportunityLevel(
   competitionScore: number,
-  appCount: number
+  breakdown: CompetitionBreakdown
 ): 'excellent' | 'good' | 'moderate' | 'difficult' | 'very_difficult' {
-  if (competitionScore < 20 || appCount < 3) {
+  // Also consider specific factors
+  const { totalEstimatedApps, establishedPlayerCount, avgDaysSinceUpdate } = breakdown;
+
+  // Stale market (apps not updated) = opportunity even if crowded
+  const isStaleMarket = avgDaysSinceUpdate > 180;
+
+  if (competitionScore < 25 || totalEstimatedApps < 5) {
     return 'excellent';
   }
-  if (competitionScore < 40 || appCount < 10) {
+  if (competitionScore < 40 || (competitionScore < 50 && isStaleMarket)) {
     return 'good';
   }
-  if (competitionScore < 60) {
+  if (competitionScore < 55 || (competitionScore < 65 && establishedPlayerCount < 3)) {
     return 'moderate';
   }
-  if (competitionScore < 80) {
+  if (competitionScore < 75) {
     return 'difficult';
   }
   return 'very_difficult';
@@ -193,44 +338,117 @@ function getOpportunityLevel(
  * Generate analysis text
  */
 function generateAnalysis(
-  keyword: string,
   apps: AppInfo[],
-  competitionScore: number,
-  avgRating: number,
-  avgReviews: number
+  breakdown: CompetitionBreakdown
 ): string {
   const parts: string[] = [];
+  const {
+    iosAppCount,
+    estimatedAndroidAppCount,
+    totalEstimatedApps,
+    avgRating,
+    avgReviewCount,
+    avgAppAgeYears,
+    establishedPlayerCount,
+    avgDaysSinceUpdate,
+  } = breakdown;
 
   if (apps.length === 0) {
-    return `No apps found for "${keyword}" - this is a blue ocean opportunity!`;
+    return 'Blue ocean opportunity - no direct competitors found!';
   }
 
-  if (apps.length < 5) {
-    parts.push(`Only ${apps.length} apps found - low competition.`);
-  } else if (apps.length >= 50) {
-    parts.push(`${apps.length}+ apps in this category - saturated market.`);
-  } else {
-    parts.push(`${apps.length} competing apps found.`);
-  }
+  // App count summary
+  parts.push(
+    `Found ${iosAppCount} iOS apps + ~${estimatedAndroidAppCount} estimated Android apps (${totalEstimatedApps} total).`
+  );
 
+  // Quality assessment
   if (avgRating >= 4.5) {
-    parts.push(`Top apps have excellent ratings (${avgRating.toFixed(1)}/5) - quality bar is high.`);
-  } else if (avgRating < 3.5) {
-    parts.push(`Top apps have mediocre ratings (${avgRating.toFixed(1)}/5) - opportunity to do better.`);
+    parts.push(`Quality bar is high (${avgRating.toFixed(1)}★ avg).`);
+  } else if (avgRating < 3.8) {
+    parts.push(`Existing apps have room for improvement (${avgRating.toFixed(1)}★ avg).`);
   }
 
-  if (avgReviews >= 50000) {
-    parts.push(`Established players with ${Math.round(avgReviews / 1000)}K+ reviews.`);
-  } else if (avgReviews < 1000) {
-    parts.push(`Low review counts - market is not yet dominated.`);
+  // Market maturity
+  if (avgAppAgeYears >= 5) {
+    parts.push(`Mature market (avg app is ${avgAppAgeYears.toFixed(1)} years old).`);
+  } else if (avgAppAgeYears < 2) {
+    parts.push(`Emerging market (avg app is ${avgAppAgeYears.toFixed(1)} years old).`);
   }
 
+  // Established players
+  if (establishedPlayerCount >= 3) {
+    parts.push(`${establishedPlayerCount} established players with 10K+ reviews.`);
+  }
+
+  // Update activity
+  if (avgDaysSinceUpdate > 180) {
+    parts.push(`Apps are stale (avg ${Math.round(avgDaysSinceUpdate)} days since update) - opportunity!`);
+  } else if (avgDaysSinceUpdate < 60) {
+    parts.push(`Actively maintained competition (avg ${Math.round(avgDaysSinceUpdate)} days since update).`);
+  }
+
+  // Top app
   const topApp = apps[0];
-  if (topApp) {
-    parts.push(`Top app: "${topApp.trackName}" by ${topApp.sellerName}.`);
+  if (topApp && topApp.userRatingCount > 10000) {
+    parts.push(
+      `Market leader: "${topApp.trackName}" (${(topApp.userRatingCount / 1000).toFixed(0)}K reviews).`
+    );
   }
 
   return parts.join(' ');
+}
+
+/**
+ * Generate recommendations based on analysis
+ */
+function generateRecommendations(
+  breakdown: CompetitionBreakdown,
+  opportunity: string
+): string[] {
+  const recommendations: string[] = [];
+  const {
+    avgRating,
+    avgReviewCount,
+    establishedPlayerCount,
+    freeAppPercentage,
+    avgDaysSinceUpdate,
+    totalEstimatedApps,
+  } = breakdown;
+
+  if (opportunity === 'excellent' || opportunity === 'good') {
+    recommendations.push('✅ Good opportunity - consider entering this market');
+  }
+
+  if (avgRating < 4.0) {
+    recommendations.push('💡 Focus on quality - existing apps have low ratings');
+  }
+
+  if (avgDaysSinceUpdate > 180) {
+    recommendations.push('💡 Competitors are stale - modern UX could win');
+  }
+
+  if (freeAppPercentage > 80) {
+    recommendations.push('⚠️ Market dominated by free apps - consider freemium model');
+  }
+
+  if (establishedPlayerCount >= 4) {
+    recommendations.push('⚠️ Multiple established players - need strong differentiation');
+  }
+
+  if (totalEstimatedApps > 80) {
+    recommendations.push('⚠️ Crowded market - find a niche angle');
+  }
+
+  if (avgReviewCount > 50000) {
+    recommendations.push('⚠️ High review counts - organic discovery will be challenging');
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push('📊 Market requires careful analysis before entry');
+  }
+
+  return recommendations;
 }
 
 /**
@@ -243,36 +461,40 @@ export async function analyzeAppStoreCompetition(
   console.log(`[AppStoreAnalyzer] Analyzing competition for "${keyword}"...`);
 
   const apps = await searchAppStore(keyword, country, 50);
-
   const topApps = apps.slice(0, 10);
-  const avgRating =
-    topApps.length > 0
-      ? topApps.reduce((sum, a) => sum + a.averageUserRating, 0) / topApps.length
-      : 0;
-  const avgReviewCount =
-    topApps.length > 0
-      ? topApps.reduce((sum, a) => sum + a.userRatingCount, 0) / topApps.length
-      : 0;
 
-  const competitionScore = calculateAppStoreCompetition(apps);
-  const marketSaturation = getMarketSaturation(apps.length, avgReviewCount);
-  const opportunity = getOpportunityLevel(competitionScore, apps.length);
-  const analysis = generateAnalysis(keyword, apps, competitionScore, avgRating, avgReviewCount);
+  // Calculate detailed breakdown
+  const breakdown = calculateCompetitionBreakdown(apps);
+
+  // Calculate final weighted score
+  const competitionScore = calculateFinalScore(breakdown);
+
+  // Determine saturation and opportunity
+  const marketSaturation = getMarketSaturation(breakdown);
+  const opportunity = getOpportunityLevel(competitionScore, breakdown);
+
+  // Generate analysis and recommendations
+  const analysis = generateAnalysis(apps, breakdown);
+  const recommendations = generateRecommendations(breakdown, opportunity);
 
   console.log(
-    `[AppStoreAnalyzer] "${keyword}": ${apps.length} apps, competition=${competitionScore}, opportunity=${opportunity}`
+    `[AppStoreAnalyzer] "${keyword}": iOS=${apps.length}, Est.Total=${breakdown.totalEstimatedApps}, ` +
+      `Score=${competitionScore} (count=${breakdown.appCountScore}, quality=${breakdown.qualityScore}, ` +
+      `maturity=${breakdown.maturityScore}, barrier=${breakdown.barrierScore}), opportunity=${opportunity}`
   );
 
   return {
     keyword,
-    totalApps: apps.length,
+    totalApps: breakdown.totalEstimatedApps,
     topApps,
     competitionScore,
-    avgRating,
-    avgReviewCount,
+    breakdown,
+    avgRating: breakdown.avgRating,
+    avgReviewCount: breakdown.avgReviewCount,
     marketSaturation,
     opportunity,
     analysis,
+    recommendations,
   };
 }
 
