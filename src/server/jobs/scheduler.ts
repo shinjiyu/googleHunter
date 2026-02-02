@@ -1,13 +1,13 @@
 import cron from 'node-cron';
 import type { AnalysisSnapshot, Keyword } from '../../shared/types';
 import { getAllKeywords, getHighOpportunityKeywords, getLatestAnalysis } from '../db';
-import { analyzeKeyword, isHighOpportunity } from '../services/opportunityScorer';
-import { closeBrowser } from '../services/serpAnalyzer';
 import {
   APP_SEED_KEYWORDS,
   discoverAppIdeasByCategory,
   discoverFromSeed,
 } from '../services/appIdeaDiscovery';
+import { analyzeKeyword, isHighOpportunity } from '../services/opportunityScorer';
+import { closeBrowser } from '../services/serpAnalyzer';
 
 // Store for new opportunities (for alerts)
 const newOpportunities: Array<{ keyword: Keyword; analysis: AnalysisSnapshot }> = [];

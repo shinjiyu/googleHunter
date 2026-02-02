@@ -219,6 +219,7 @@ export default function KeywordDetail() {
 
 /**
  * Scoring Breakdown Component - Shows detailed analysis
+ * Supports both App Store analysis (for app keywords) and SERP analysis
  */
 function ScoringBreakdown({ 
   analysis, 
@@ -227,80 +228,57 @@ function ScoringBreakdown({
   analysis: AnalysisSnapshot;
   keyword: string;
 }) {
-  // Calculate component scores for breakdown
   const serpData = analysis.serpData || [];
   
-  // 1. Result count factor (0-25)
-  let resultCountScore = 0;
-  let resultCountExplanation = '';
-  if (analysis.resultCount > 100000000) {
-    resultCountScore = 25;
-    resultCountExplanation = '> 100M results (very high competition)';
-  } else if (analysis.resultCount > 10000000) {
-    resultCountScore = 20;
-    resultCountExplanation = '10M-100M results (high competition)';
-  } else if (analysis.resultCount > 1000000) {
-    resultCountScore = 15;
-    resultCountExplanation = '1M-10M results (medium competition)';
-  } else if (analysis.resultCount > 100000) {
-    resultCountScore = 10;
-    resultCountExplanation = '100K-1M results (low-medium competition)';
-  } else if (analysis.resultCount > 10000) {
-    resultCountScore = 5;
-    resultCountExplanation = '10K-100K results (low competition)';
-  } else {
-    resultCountScore = 0;
-    resultCountExplanation = '< 10K results (very low competition)';
-  }
-
-  // 2. Domain authority check
-  const highAuthorityDomains = [
-    'wikipedia.org', 'amazon.com', 'youtube.com', 'facebook.com', 
-    'twitter.com', 'linkedin.com', 'reddit.com', 'medium.com',
-    'forbes.com', 'nytimes.com', 'bbc.com', 'cnn.com'
-  ];
+  // Check if this is an App Store analysis (first result has domain 'appstore')
+  const isAppStoreAnalysis = serpData.length > 0 && serpData[0].domain === 'appstore';
   
-  const top5Results = serpData.slice(0, 5);
-  const highAuthorityCount = top5Results.filter(r => 
-    highAuthorityDomains.some(domain => r.domain.includes(domain)) ||
-    r.domain.endsWith('.gov') || 
-    r.domain.endsWith('.edu')
-  ).length;
-  const domainAuthorityScore = highAuthorityCount * 7;
-
-  // 3. Title match analysis
-  const keywordLower = keyword.toLowerCase();
-  const exactMatchCount = top5Results.filter(r => 
-    r.title.toLowerCase().includes(keywordLower)
-  ).length;
-  const titleMatchScore = exactMatchCount * 4;
-
-  // 4. Forum/Q&A content check
-  const forumDomains = ['quora.com', 'reddit.com', 'stackoverflow.com', 'answers.yahoo.com'];
-  const forumCount = top5Results.filter(r => 
-    forumDomains.some(domain => r.domain.includes(domain))
-  ).length;
-  const contentTypeScore = (5 - forumCount) * 4;
+  // Parse App Store info from serpData if available
+  const appStoreInfo = isAppStoreAnalysis ? {
+    summary: serpData[0].title, // e.g., "App Store Analysis: 106 apps"
+    analysis: serpData[0].snippet,
+    topApps: serpData.slice(1).map(s => ({
+      name: s.title,
+      url: s.url,
+      info: s.snippet, // e.g., "Rating: 4.8/5, Reviews: 31,000"
+    })),
+    totalApps: parseInt(serpData[0].title.match(/(\d+)/)?.[1] || '0', 10),
+  } : null;
 
   // Calculate opportunity score breakdown
   const searchVolumeContribution = analysis.searchVolume * 0.4;
   const competitionContribution = (100 - analysis.competitionScore) * 0.6;
   let trendMultiplier = 1;
-  let trendBonus = 0;
   if (analysis.trend === 'rising') {
     trendMultiplier = 1.2;
-    trendBonus = 20;
   } else if (analysis.trend === 'declining') {
     trendMultiplier = 0.8;
-    trendBonus = -20;
   }
 
   const baseScore = searchVolumeContribution + competitionContribution;
   const finalScore = Math.min(100, Math.max(0, Math.round(baseScore * trendMultiplier)));
 
+  // Estimate breakdown scores for App Store analysis
+  const estimateAppStoreBreakdown = (totalApps: number, competitionScore: number) => {
+    // Reverse-engineer the breakdown from total score
+    // These are approximate based on the algorithm in appStoreAnalyzer.ts
+    const appCountScore = totalApps >= 100 ? 100 : totalApps >= 60 ? 80 : totalApps >= 30 ? 55 : totalApps >= 10 ? 25 : 10;
+    const qualityScore = Math.min(100, competitionScore * 1.1); // Approximate
+    const maturityScore = Math.min(100, competitionScore * 0.8);
+    const barrierScore = Math.min(100, competitionScore * 1.0);
+    
+    return { appCountScore, qualityScore, maturityScore, barrierScore };
+  };
+
+  const appBreakdown = appStoreInfo 
+    ? estimateAppStoreBreakdown(appStoreInfo.totalApps, analysis.competitionScore)
+    : null;
+
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-6">
-      <h2 className="text-lg font-semibold text-gray-900 mb-4">Scoring Breakdown</h2>
+      <h2 className="text-lg font-semibold text-gray-900 mb-4">
+        {isAppStoreAnalysis ? '📱 App Store Competition Analysis' : 'Scoring Breakdown'}
+      </h2>
       
       {/* Opportunity Score Formula */}
       <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
@@ -340,7 +318,9 @@ function ScoringBreakdown({
 
         {/* Competition Score */}
         <div className="space-y-3">
-          <h3 className="font-medium text-gray-900">Competition: {analysis.competitionScore}/100</h3>
+          <h3 className="font-medium text-gray-900">
+            {isAppStoreAnalysis ? 'App Store Competition' : 'Competition'}: {analysis.competitionScore}/100
+          </h3>
           <div className="w-full bg-gray-200 rounded-full h-3">
             <div 
               className={`h-3 rounded-full ${
@@ -358,7 +338,7 @@ function ScoringBreakdown({
               ? 'Low competition - Good opportunity!' 
               : analysis.competitionScore <= 70 
               ? 'Medium competition' 
-              : 'High competition - Difficult to rank'}
+              : 'High competition - Difficult market'}
           </p>
           <p className="text-sm text-gray-500">
             Contributes: {competitionContribution.toFixed(1)} points (60% weight)
@@ -366,42 +346,68 @@ function ScoringBreakdown({
         </div>
       </div>
 
-      {/* Competition Breakdown */}
-      <div className="mt-6 border-t pt-6">
-        <h3 className="font-medium text-gray-900 mb-4">Competition Score Breakdown</h3>
-        <div className="space-y-4">
-          <ScoreRow 
-            label="Result Count Factor"
-            score={resultCountScore}
-            maxScore={25}
-            explanation={resultCountExplanation}
-          />
-          <ScoreRow 
-            label="High Authority Domains (Top 5)"
-            score={domainAuthorityScore}
-            maxScore={35}
-            explanation={`${highAuthorityCount} high-authority sites in top 5 results`}
-          />
-          <ScoreRow 
-            label="Title Keyword Match (Top 5)"
-            score={titleMatchScore}
-            maxScore={20}
-            explanation={`${exactMatchCount} results have exact keyword in title`}
-          />
-          <ScoreRow 
-            label="Content Type (Non-forum)"
-            score={contentTypeScore}
-            maxScore={20}
-            explanation={`${forumCount} forum/Q&A results (more = content gap opportunity)`}
-          />
-          <div className="border-t pt-2 mt-2">
-            <div className="flex justify-between font-medium">
-              <span>Total Competition Score</span>
-              <span>{analysis.competitionScore}/100</span>
+      {/* App Store Competition Breakdown */}
+      {isAppStoreAnalysis && appStoreInfo && appBreakdown && (
+        <div className="mt-6 border-t pt-6">
+          <h3 className="font-medium text-gray-900 mb-4">
+            App Store Competition Breakdown ({appStoreInfo.totalApps} apps found)
+          </h3>
+          <div className="space-y-4">
+            <ScoreRow 
+              label="📊 App Count (iOS + Android estimate)"
+              score={appBreakdown.appCountScore}
+              maxScore={100}
+              explanation={`${appStoreInfo.totalApps} total estimated apps in this category`}
+              color="blue"
+            />
+            <ScoreRow 
+              label="⭐ Quality (Ratings & Reviews)"
+              score={appBreakdown.qualityScore}
+              maxScore={100}
+              explanation="Average rating and review count of top apps"
+              color="purple"
+            />
+            <ScoreRow 
+              label="📅 Market Maturity"
+              score={appBreakdown.maturityScore}
+              maxScore={100}
+              explanation="App age and update frequency"
+              color="indigo"
+            />
+            <ScoreRow 
+              label="🚧 Barrier to Entry"
+              score={appBreakdown.barrierScore}
+              maxScore={100}
+              explanation="Free app dominance & established players"
+              color="orange"
+            />
+            <div className="border-t pt-2 mt-2">
+              <div className="flex justify-between font-medium">
+                <span>Weighted Total Competition</span>
+                <span>{analysis.competitionScore}/100</span>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                (App Count 25% + Quality 30% + Maturity 20% + Barrier 25%)
+              </p>
             </div>
           </div>
+
+          {/* App Store Analysis Text */}
+          {appStoreInfo.analysis && (
+            <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+              <p className="text-sm text-gray-700">{appStoreInfo.analysis}</p>
+            </div>
+          )}
         </div>
-      </div>
+      )}
+
+      {/* SERP Competition Breakdown (for non-app keywords) */}
+      {!isAppStoreAnalysis && (
+        <div className="mt-6 border-t pt-6">
+          <h3 className="font-medium text-gray-900 mb-4">SERP Competition Breakdown</h3>
+          <SerpBreakdown analysis={analysis} keyword={keyword} serpData={serpData} />
+        </div>
+      )}
 
       {/* Trend Impact */}
       <div className="mt-6 border-t pt-6">
@@ -426,44 +432,160 @@ function ScoringBreakdown({
 
       {/* Recommendations */}
       <div className="mt-6 border-t pt-6">
-        <h3 className="font-medium text-gray-900 mb-3">Analysis Summary</h3>
+        <h3 className="font-medium text-gray-900 mb-3">
+          {isAppStoreAnalysis ? 'App Opportunity Assessment' : 'Analysis Summary'}
+        </h3>
         <div className="space-y-2">
           {analysis.opportunityScore >= 60 && (
             <div className="flex items-start gap-2 text-green-700">
               <span>✓</span>
-              <span className="text-sm">High opportunity - Good candidate for content creation</span>
+              <span className="text-sm">
+                {isAppStoreAnalysis 
+                  ? 'Good app opportunity - Market has room for new entrants'
+                  : 'High opportunity - Good candidate for content creation'}
+              </span>
+            </div>
+          )}
+          {analysis.opportunityScore >= 40 && analysis.opportunityScore < 60 && (
+            <div className="flex items-start gap-2 text-yellow-700">
+              <span>!</span>
+              <span className="text-sm">Moderate opportunity - Consider differentiation strategy</span>
+            </div>
+          )}
+          {analysis.opportunityScore < 40 && (
+            <div className="flex items-start gap-2 text-red-700">
+              <span>✗</span>
+              <span className="text-sm">
+                {isAppStoreAnalysis 
+                  ? 'Difficult market - Strong competition from established players'
+                  : 'Low opportunity - High competition'}
+              </span>
             </div>
           )}
           {analysis.searchVolume < 20 && (
             <div className="flex items-start gap-2 text-yellow-700">
               <span>!</span>
-              <span className="text-sm">Low search volume - May not drive significant traffic</span>
+              <span className="text-sm">Low search volume - Niche market</span>
             </div>
           )}
-          {analysis.competitionScore > 70 && (
+          {isAppStoreAnalysis && analysis.competitionScore > 80 && (
             <div className="flex items-start gap-2 text-red-700">
-              <span>!</span>
-              <span className="text-sm">High competition - Dominated by authority sites</span>
-            </div>
-          )}
-          {forumCount >= 3 && (
-            <div className="flex items-start gap-2 text-green-700">
-              <span>✓</span>
-              <span className="text-sm">Content gap detected - Many forum results indicate unmet demand</span>
+              <span>⚠️</span>
+              <span className="text-sm">Saturated market - Find a unique angle or niche</span>
             </div>
           )}
           {analysis.trend === 'rising' && (
             <div className="flex items-start gap-2 text-green-700">
-              <span>✓</span>
-              <span className="text-sm">Rising trend - Growing interest in this topic</span>
+              <span>📈</span>
+              <span className="text-sm">Rising trend - Growing interest</span>
             </div>
           )}
           {analysis.trend === 'declining' && (
             <div className="flex items-start gap-2 text-yellow-700">
-              <span>!</span>
+              <span>📉</span>
               <span className="text-sm">Declining trend - Interest may be fading</span>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * SERP Breakdown Component (for non-app keywords)
+ */
+function SerpBreakdown({ 
+  analysis, 
+  keyword,
+  serpData
+}: { 
+  analysis: AnalysisSnapshot;
+  keyword: string;
+  serpData: typeof analysis.serpData;
+}) {
+  // 1. Result count factor
+  let resultCountScore = 0;
+  let resultCountExplanation = '';
+  if (analysis.resultCount > 100000000) {
+    resultCountScore = 25;
+    resultCountExplanation = '> 100M results (very high competition)';
+  } else if (analysis.resultCount > 10000000) {
+    resultCountScore = 20;
+    resultCountExplanation = '10M-100M results (high competition)';
+  } else if (analysis.resultCount > 1000000) {
+    resultCountScore = 15;
+    resultCountExplanation = '1M-10M results (medium competition)';
+  } else if (analysis.resultCount > 100000) {
+    resultCountScore = 10;
+    resultCountExplanation = '100K-1M results (low-medium competition)';
+  } else if (analysis.resultCount > 10000) {
+    resultCountScore = 5;
+    resultCountExplanation = '10K-100K results (low competition)';
+  } else {
+    resultCountScore = 0;
+    resultCountExplanation = '< 10K results (very low competition)';
+  }
+
+  // 2. Domain authority check
+  const highAuthorityDomains = [
+    'wikipedia.org', 'amazon.com', 'youtube.com', 'facebook.com', 
+    'twitter.com', 'linkedin.com', 'reddit.com', 'medium.com',
+    'forbes.com', 'nytimes.com', 'bbc.com', 'cnn.com'
+  ];
+  
+  const top5Results = serpData.slice(0, 5);
+  const highAuthorityCount = top5Results.filter(r => 
+    highAuthorityDomains.some(domain => r.domain.includes(domain)) ||
+    r.domain.endsWith('.gov') || 
+    r.domain.endsWith('.edu')
+  ).length;
+  const domainAuthorityScore = highAuthorityCount * 7;
+
+  // 3. Title match
+  const keywordLower = keyword.toLowerCase();
+  const exactMatchCount = top5Results.filter(r => 
+    r.title.toLowerCase().includes(keywordLower)
+  ).length;
+  const titleMatchScore = exactMatchCount * 4;
+
+  // 4. Forum content
+  const forumDomains = ['quora.com', 'reddit.com', 'stackoverflow.com', 'answers.yahoo.com'];
+  const forumCount = top5Results.filter(r => 
+    forumDomains.some(domain => r.domain.includes(domain))
+  ).length;
+  const contentTypeScore = (5 - forumCount) * 4;
+
+  return (
+    <div className="space-y-4">
+      <ScoreRow 
+        label="Result Count Factor"
+        score={resultCountScore}
+        maxScore={25}
+        explanation={resultCountExplanation}
+      />
+      <ScoreRow 
+        label="High Authority Domains (Top 5)"
+        score={domainAuthorityScore}
+        maxScore={35}
+        explanation={`${highAuthorityCount} high-authority sites in top 5 results`}
+      />
+      <ScoreRow 
+        label="Title Keyword Match (Top 5)"
+        score={titleMatchScore}
+        maxScore={20}
+        explanation={`${exactMatchCount} results have exact keyword in title`}
+      />
+      <ScoreRow 
+        label="Content Type (Non-forum)"
+        score={contentTypeScore}
+        maxScore={20}
+        explanation={`${forumCount} forum/Q&A results (more = content gap opportunity)`}
+      />
+      <div className="border-t pt-2 mt-2">
+        <div className="flex justify-between font-medium">
+          <span>Total Competition Score</span>
+          <span>{analysis.competitionScore}/100</span>
         </div>
       </div>
     </div>
@@ -474,25 +596,36 @@ function ScoreRow({
   label, 
   score, 
   maxScore, 
-  explanation 
+  explanation,
+  color = 'orange'
 }: { 
   label: string; 
   score: number; 
   maxScore: number; 
   explanation: string;
+  color?: 'orange' | 'blue' | 'purple' | 'indigo' | 'green' | 'red';
 }) {
   const percentage = (score / maxScore) * 100;
+  
+  const colorClasses = {
+    orange: 'bg-orange-500',
+    blue: 'bg-blue-500',
+    purple: 'bg-purple-500',
+    indigo: 'bg-indigo-500',
+    green: 'bg-green-500',
+    red: 'bg-red-500',
+  };
   
   return (
     <div>
       <div className="flex justify-between text-sm mb-1">
         <span className="text-gray-700">{label}</span>
-        <span className="text-gray-900 font-medium">{score}/{maxScore}</span>
+        <span className="text-gray-900 font-medium">{Math.round(score)}/{maxScore}</span>
       </div>
       <div className="w-full bg-gray-200 rounded-full h-2 mb-1">
         <div 
-          className="bg-orange-500 h-2 rounded-full" 
-          style={{ width: `${percentage}%` }}
+          className={`${colorClasses[color]} h-2 rounded-full`}
+          style={{ width: `${Math.min(100, percentage)}%` }}
         />
       </div>
       <p className="text-xs text-gray-500">{explanation}</p>
