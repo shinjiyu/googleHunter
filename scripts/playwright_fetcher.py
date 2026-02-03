@@ -104,7 +104,7 @@ class PlaywrightTrendsFetcher:
 
         self._context = await self._browser.new_context(
             viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
             locale=self.config.hl.split("-")[0],
             timezone_id="America/New_York",
             # Add extra HTTP headers to mimic real browser
@@ -120,6 +120,52 @@ class PlaywrightTrendsFetcher:
                 "Sec-Fetch-User": "?1",
             }
         )
+        
+        # Add stealth scripts to hide automation
+        await self._context.add_init_script("""
+            // Override webdriver property
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+            });
+            
+            // Override plugins to have length > 0
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => {
+                    return [1, 2, 3, 4, 5];
+                },
+            });
+            
+            // Override languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en'],
+            });
+            
+            // Add chrome object
+            window.chrome = {
+                runtime: {},
+                loadTimes: function() {},
+                csi: function() {},
+                app: {},
+            };
+            
+            // Override permissions query
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+            
+            // Spoof hardware concurrency
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => 8,
+            });
+            
+            // Spoof device memory  
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => 8,
+            });
+        """)
 
         self._page = await self._context.new_page()
 
@@ -235,7 +281,7 @@ class PlaywrightTrendsFetcher:
             await self._accept_cookie_consent()
             
             # Step 3: Wait for page to stabilize
-            await asyncio.sleep(random.uniform(2, 4))
+            await asyncio.sleep(random.uniform(3, 5))
             
             # Step 4: Simulate some human behavior
             await self._page.mouse.move(
@@ -243,12 +289,22 @@ class PlaywrightTrendsFetcher:
                 random.randint(100, 400)
             )
             await self._page.evaluate("window.scrollBy(0, 200)")
-            await asyncio.sleep(random.uniform(1, 2))
+            await asyncio.sleep(random.uniform(2, 3))
+            
+            # Step 5: Click on a trending item to further establish session
+            try:
+                items = await self._page.query_selector_all("table tbody tr")
+                if items and len(items) > 2:
+                    await items[1].click()
+                    await asyncio.sleep(random.uniform(3, 5))
+                    await self._page.go_back()
+                    await asyncio.sleep(random.uniform(2, 3))
+            except Exception:
+                pass
             
             self._session_warmed_up = True
             
         except Exception:
-            # Continue even if warmup fails
             pass
     
     async def _accept_cookie_consent(self) -> bool:
@@ -461,29 +517,71 @@ class PlaywrightTrendsFetcher:
         query = ",".join(quote(kw) for kw in keywords)
         url = f"{self.BASE_URL}/trends/explore?geo={geo}&q={query}&hl={self.config.hl}"
 
+        import sys
+        
+        # Clear batchexecute data from warmup before navigating to explore
+        if "batchexecute" in self._intercepted_data:
+            self._intercepted_data["batchexecute"] = []
+        
         try:
-            response = await self._page.goto(
-                url,
+            # Strategy: Use the search box on homepage to navigate to explore
+            # This avoids direct URL navigation which may trigger 429
+            
+            # Step 1: Go to the trends homepage
+            await self._page.goto(
+                "https://trends.google.com/trends/",
                 wait_until="networkidle",
-                timeout=self.config.timeout,
+                timeout=30000,
             )
+            await asyncio.sleep(random.uniform(2, 3))
             
-            # Accept cookie consent again if it appears on explore page
-            await self._accept_cookie_consent()
+            # Step 2: Find and use the visible search input
+            search_input = None
+            inputs = await self._page.query_selector_all("input[type='text']")
+            for inp in inputs:
+                if await inp.is_visible():
+                    search_input = inp
+                    break
             
-            # Wait for AngularJS app to initialize and load data
-            await asyncio.sleep(random.uniform(5, 8))
-            
-            # Try to trigger data loading by scrolling
-            await self._page.evaluate("window.scrollBy(0, 300)")
-            await asyncio.sleep(2)
+            if search_input:
+                # Click on search input
+                await search_input.click()
+                await asyncio.sleep(random.uniform(0.5, 1))
+                
+                # Type the keyword slowly (like a human)
+                keyword = keywords[0]
+                for char in keyword:
+                    await search_input.type(char, delay=random.randint(50, 100))
+                
+                await asyncio.sleep(random.uniform(1.5, 2.5))
+                
+                # Press Enter to search
+                await self._page.keyboard.press("Enter")
+                
+                # Wait for page navigation
+                try:
+                    await self._page.wait_for_url("**/explore**", timeout=15000)
+                except:
+                    pass
+                
+                # Wait for data to load
+                await asyncio.sleep(random.uniform(6, 10))
+                
+                # Check if we got blocked
+                if "sorry" not in self._page.url:
+                    # Accept cookie consent if needed
+                    await self._accept_cookie_consent()
+                    await asyncio.sleep(random.uniform(2, 3))
+            else:
+                # Fallback to direct URL
+                await self._page.goto(url, wait_until="networkidle", timeout=self.config.timeout)
             
         except Exception:
             pass
 
         results: dict[str, list[InterestDataPoint]] = {kw: [] for kw in keywords}
 
-        # Get data from intercepted API response
+        # Method 1: Get data from intercepted legacy API response (multiline)
         if "multiline" in self._intercepted_data:
             data = self._intercepted_data["multiline"]
             timeline = data.get("default", {}).get("timelineData", [])
@@ -503,14 +601,94 @@ class PlaywrightTrendsFetcher:
                             )
                         )
 
-        # Fallback to chart scraping if API interception failed
+        # Method 2: Parse batchexecute responses (new API)
+        if not any(results.values()) and "batchexecute" in self._intercepted_data:
+            results = self._parse_batchexecute_timeline(keywords)
+
+        # Method 3: Fallback to chart scraping if API interception failed
         if not any(results.values()):
             results = await self._scrape_interest_chart(keywords)
         
-        # If still no data, try to extract from page state
+        # Method 4: If still no data, try to extract from page state
         if not any(results.values()):
             results = await self._extract_chart_data_from_page(keywords)
 
+        return results
+    
+    def _parse_batchexecute_timeline(self, keywords: list[str]) -> dict[str, list[InterestDataPoint]]:
+        """Parse timeline data from batchexecute responses."""
+        import re
+        
+        results: dict[str, list[InterestDataPoint]] = {kw: [] for kw in keywords}
+        
+        for response_body in self._intercepted_data.get("batchexecute", []):
+            try:
+                # batchexecute format: )]}' followed by chunks
+                if response_body.startswith(")]}'"):
+                    response_body = response_body[5:]
+                
+                # Look for timelineData in the response
+                # The data is nested in a complex structure, need to find it
+                if "timelineData" not in response_body:
+                    continue
+                
+                # Try to extract the JSON array containing timelineData
+                # Pattern: "timelineData":[{...}]
+                timeline_match = re.search(
+                    r'"timelineData"\s*:\s*(\[[\s\S]*?\])\s*[,}]',
+                    response_body
+                )
+                
+                if timeline_match:
+                    try:
+                        timeline_str = timeline_match.group(1)
+                        # Fix potential JSON issues (escaped quotes, etc.)
+                        timeline_data = json.loads(timeline_str)
+                        
+                        for point in timeline_data:
+                            time_str = point.get("formattedTime", "")
+                            values = point.get("value", [])
+                            formatted = point.get("formattedValue", [])
+                            
+                            for i, kw in enumerate(keywords):
+                                if i < len(values):
+                                    results[kw].append(
+                                        InterestDataPoint(
+                                            date=time_str,
+                                            value=values[i],
+                                            formatted_value=formatted[i] if i < len(formatted) else "",
+                                        )
+                                    )
+                        
+                        # If we got data, return immediately
+                        if any(results.values()):
+                            return results
+                            
+                    except json.JSONDecodeError:
+                        # Try alternative parsing
+                        pass
+                
+                # Alternative: Look for numeric arrays that might be values
+                # Pattern: "value":[number,number,...]
+                value_matches = re.findall(r'"value"\s*:\s*\[(\d+)\]', response_body)
+                time_matches = re.findall(r'"formattedTime"\s*:\s*"([^"]+)"', response_body)
+                
+                if value_matches and time_matches and len(value_matches) == len(time_matches):
+                    for i, (time_str, value_str) in enumerate(zip(time_matches, value_matches)):
+                        for kw in keywords:
+                            results[kw].append(
+                                InterestDataPoint(
+                                    date=time_str,
+                                    value=int(value_str),
+                                )
+                            )
+                    
+                    if any(results.values()):
+                        return results
+                        
+            except Exception:
+                continue
+        
         return results
     
     async def _search_via_ui(self, keyword: str, geo: str) -> bool:
