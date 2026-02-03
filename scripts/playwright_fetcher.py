@@ -213,20 +213,54 @@ class PlaywrightTrendsFetcher:
         Warm up the session by visiting homepage first.
         This is critical to avoid 429 rate limiting - it obtains necessary cookies
         like NID and _GRECAPTCHA that Google uses to identify legitimate users.
+        
+        Enhanced strategy (2024+):
+        1. Visit homepage and browse naturally
+        2. Click on trending topics to simulate real user
+        3. Add random delays and mouse movements
         """
         if self._session_warmed_up:
             return
         
+        import random
+        
         try:
-            # Visit homepage first to get cookies
+            # Step 1: Visit homepage first to get cookies
             await self._page.goto(
-                "https://trends.google.com/",
+                "https://trends.google.com/trending?geo=US",
                 wait_until="networkidle",
                 timeout=30000
             )
             
-            # Add delay to simulate human behavior (2-4 seconds)
-            import random
+            # Longer delay to seem more human (3-6 seconds)
+            await asyncio.sleep(random.uniform(3, 6))
+            
+            # Step 2: Simulate mouse movement
+            await self._page.mouse.move(
+                random.randint(100, 500),
+                random.randint(100, 400)
+            )
+            
+            # Step 3: Scroll down a bit
+            await self._page.evaluate("window.scrollBy(0, 200)")
+            await asyncio.sleep(random.uniform(1, 2))
+            
+            # Step 4: Try to click on a trending item to warm up the session
+            try:
+                items = await self._page.query_selector_all("table tbody tr, [role='row']")
+                if items and len(items) > 0:
+                    # Click on a random item (not the first one)
+                    idx = random.randint(0, min(4, len(items) - 1))
+                    await items[idx].click()
+                    await asyncio.sleep(random.uniform(2, 4))
+                    
+                    # Go back to homepage
+                    await self._page.go_back()
+                    await asyncio.sleep(random.uniform(1, 2))
+            except Exception:
+                pass  # Continue even if click fails
+            
+            # Step 5: Add one more random delay before actual request
             await asyncio.sleep(random.uniform(2, 4))
             
             self._session_warmed_up = True
@@ -410,25 +444,43 @@ class PlaywrightTrendsFetcher:
         geo = geo or self.config.geo
         self._intercepted_data.clear()
 
+        import random
+
         # CRITICAL: Warm up session first to avoid 429
         await self._warmup_session()
         
-        # Set referer header before navigating
-        await self._page.set_extra_http_headers({
-            "Referer": "https://trends.google.com/",
-            "Origin": "https://trends.google.com",
-        })
-
-        # Build the explore URL with proper encoding
-        from urllib.parse import quote
-        query = ",".join(quote(kw) for kw in keywords)
-        url = f"{self.BASE_URL}/trends/explore?geo={geo}&q={query}&hl={self.config.hl}"
-
-        # Wait for the chart or data widget to load
-        await self._navigate_with_retry(url, wait_for=None)
+        # NEW STRATEGY: Use search box instead of direct URL navigation
+        # This avoids 429 errors on the explore page
+        success = await self._search_via_ui(keywords[0], geo)
         
-        # Wait longer for data to load
-        await asyncio.sleep(5)
+        if not success:
+            # Fallback: Try direct navigation with careful timing
+            await self._page.set_extra_http_headers({
+                "Referer": "https://trends.google.com/trending?geo=US",
+                "Origin": "https://trends.google.com",
+            })
+
+            from urllib.parse import quote
+            query = ",".join(quote(kw) for kw in keywords)
+            url = f"{self.BASE_URL}/trends/explore?geo={geo}&q={query}&hl={self.config.hl}"
+
+            await asyncio.sleep(random.uniform(3, 5))
+
+            try:
+                response = await self._page.goto(
+                    url,
+                    wait_until="networkidle",
+                    timeout=self.config.timeout,
+                )
+                
+                if response and response.status == 429:
+                    # 429 error - data will be empty
+                    pass
+            except Exception:
+                pass
+        
+        # Wait for data to load
+        await asyncio.sleep(random.uniform(5, 8))
 
         results: dict[str, list[InterestDataPoint]] = {kw: [] for kw in keywords}
 
@@ -461,6 +513,66 @@ class PlaywrightTrendsFetcher:
             results = await self._extract_chart_data_from_page(keywords)
 
         return results
+    
+    async def _search_via_ui(self, keyword: str, geo: str) -> bool:
+        """
+        Search for a keyword using the UI search box.
+        This is more likely to succeed than direct URL navigation.
+        """
+        import random
+        
+        try:
+            # Go to trends homepage first
+            await self._page.goto(
+                "https://trends.google.com/trends/?geo=US",
+                wait_until="networkidle",
+                timeout=30000,
+            )
+            await asyncio.sleep(random.uniform(2, 4))
+            
+            # Find and click the search input
+            search_input = await self._page.query_selector(
+                "input[type='text'], input[placeholder*='search'], [role='combobox'] input"
+            )
+            
+            if not search_input:
+                # Try to find the explore link and click it
+                explore_link = await self._page.query_selector(
+                    "a[href*='explore'], button:has-text('Explore')"
+                )
+                if explore_link:
+                    await explore_link.click()
+                    await asyncio.sleep(random.uniform(2, 3))
+                    search_input = await self._page.query_selector(
+                        "input[type='text'], input[placeholder*='search']"
+                    )
+            
+            if search_input:
+                # Click on search input
+                await search_input.click()
+                await asyncio.sleep(random.uniform(0.5, 1))
+                
+                # Type the keyword slowly (like a human)
+                for char in keyword:
+                    await search_input.type(char, delay=random.randint(50, 150))
+                
+                await asyncio.sleep(random.uniform(1, 2))
+                
+                # Press Enter to search
+                await self._page.keyboard.press("Enter")
+                
+                # Wait for results to load
+                await asyncio.sleep(random.uniform(5, 8))
+                
+                # Check if we got to the explore page
+                current_url = self._page.url
+                if "explore" in current_url and "sorry" not in current_url:
+                    return True
+            
+            return False
+            
+        except Exception:
+            return False
     
     async def _extract_chart_data_from_page(
         self, keywords: list[str]

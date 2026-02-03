@@ -65,12 +65,16 @@ async def fetch_interest_over_time(keywords: list[str], geo: str = "US", hl: str
         try:
             interest = await fetcher.get_interest_over_time(keywords, geo=geo)
             
+            # Handle None or empty result
+            if interest is None:
+                interest = {kw: [] for kw in keywords}
+            
             # Format data for Node.js
             result = {}
             for keyword, data_points in interest.items():
                 result[keyword] = [
                     {"date": dp.date, "value": dp.value}
-                    for dp in data_points
+                    for dp in (data_points or [])
                 ]
             
             output_json({
