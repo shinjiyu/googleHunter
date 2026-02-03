@@ -79,12 +79,21 @@ export async function analyzeKeyword(
   console.log(`Analyzing keyword: "${keyword.keyword}"`);
 
   try {
-    // Check if keyword is app-related (also check source)
-    const isAppKeyword = isAppRelatedKeyword(keyword.keyword) || keyword.source === 'app_idea';
+    // 1. Get search volume from Google Trends
+    const trendData = await fetchInterestOverTime(keyword.keyword, config);
+    const searchVolume = trendData.length > 0
+      ? Math.round(trendData.slice(-7).reduce((sum, p) => sum + p.value, 0) / Math.min(7, trendData.length))
+      : await getSearchVolume(keyword.keyword, config);
 
-    // 1. Analyze App Store competition first (for app keywords)
+    // 2. Detect trend direction
+    const trend = detectTrend(trendData);
+
+    // 3. Analyze competition (App Store for app keywords, SERP for others)
     let competitionScore: number;
     let appStoreData: AppStoreCompetition | null = null;
+
+    // Check if keyword is app-related (also check source)
+    const isAppKeyword = isAppRelatedKeyword(keyword.keyword) || keyword.source === 'app_idea';
 
     if (isAppKeyword) {
       // Use App Store competition as primary metric
@@ -101,39 +110,12 @@ export async function analyzeKeyword(
       );
     }
 
-    // 2. Get search volume from Google Trends
-    const trendData = await fetchInterestOverTime(keyword.keyword, config);
-    let searchVolume = trendData.length > 0
-      ? Math.round(trendData.slice(-7).reduce((sum, p) => sum + p.value, 0) / Math.min(7, trendData.length))
-      : await getSearchVolume(keyword.keyword, config);
-
-    // 2.1 If search volume is 0 and we have App Store data, estimate from app count
-    // More apps = more demand = higher estimated search volume
-    if (searchVolume === 0 && appStoreData) {
-      const appCount = appStoreData.totalApps;
-      if (appCount >= 100) {
-        searchVolume = 70; // High demand category
-      } else if (appCount >= 50) {
-        searchVolume = 55; // Medium-high demand
-      } else if (appCount >= 20) {
-        searchVolume = 40; // Medium demand
-      } else if (appCount >= 5) {
-        searchVolume = 25; // Low-medium demand
-      } else {
-        searchVolume = 15; // Niche market
-      }
-      console.log(`[SearchVolume] Estimated from App Store: ${appCount} apps -> volume=${searchVolume}`);
-    }
-
-    // 3. Detect trend direction
-    const trend = detectTrend(trendData);
-
     // 4. Check for content/market gap
     const gap = isAppKeyword
       ? (appStoreData?.totalApps || 0) < 10 // Low app count = gap
       : false; // TODO: SERP gap analysis
 
-    // 5. Calculate opportunity score with app-specific factors
+    // 5. Calculate opportunity score
     const opportunityScore = calculateOpportunityScore(
       searchVolume,
       competitionScore,

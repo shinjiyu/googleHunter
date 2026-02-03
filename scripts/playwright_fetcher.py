@@ -215,9 +215,8 @@ class PlaywrightTrendsFetcher:
         like NID and _GRECAPTCHA that Google uses to identify legitimate users.
         
         Enhanced strategy (2024+):
-        1. Visit homepage and browse naturally
-        2. Click on trending topics to simulate real user
-        3. Add random delays and mouse movements
+        1. Visit homepage and accept cookie consent
+        2. Browse naturally to establish session
         """
         if self._session_warmed_up:
             return
@@ -225,49 +224,57 @@ class PlaywrightTrendsFetcher:
         import random
         
         try:
-            # Step 1: Visit homepage first to get cookies
+            # Step 1: Visit trending page first to get cookies
             await self._page.goto(
                 "https://trends.google.com/trending?geo=US",
                 wait_until="networkidle",
                 timeout=30000
             )
             
-            # Longer delay to seem more human (3-6 seconds)
-            await asyncio.sleep(random.uniform(3, 6))
+            # Step 2: Accept cookie consent (CRITICAL for page to work)
+            await self._accept_cookie_consent()
             
-            # Step 2: Simulate mouse movement
+            # Step 3: Wait for page to stabilize
+            await asyncio.sleep(random.uniform(2, 4))
+            
+            # Step 4: Simulate some human behavior
             await self._page.mouse.move(
                 random.randint(100, 500),
                 random.randint(100, 400)
             )
-            
-            # Step 3: Scroll down a bit
             await self._page.evaluate("window.scrollBy(0, 200)")
             await asyncio.sleep(random.uniform(1, 2))
-            
-            # Step 4: Try to click on a trending item to warm up the session
-            try:
-                items = await self._page.query_selector_all("table tbody tr, [role='row']")
-                if items and len(items) > 0:
-                    # Click on a random item (not the first one)
-                    idx = random.randint(0, min(4, len(items) - 1))
-                    await items[idx].click()
-                    await asyncio.sleep(random.uniform(2, 4))
-                    
-                    # Go back to homepage
-                    await self._page.go_back()
-                    await asyncio.sleep(random.uniform(1, 2))
-            except Exception:
-                pass  # Continue even if click fails
-            
-            # Step 5: Add one more random delay before actual request
-            await asyncio.sleep(random.uniform(2, 4))
             
             self._session_warmed_up = True
             
         except Exception:
             # Continue even if warmup fails
             pass
+    
+    async def _accept_cookie_consent(self) -> bool:
+        """
+        Accept cookie consent dialog if present.
+        This is required for Google Trends to work properly.
+        """
+        consent_selectors = [
+            ".cookieBarConsentButton",  # Google Trends specific
+            "a.cookieBarButton:has-text('OK')",
+            "button:has-text('Accept all')",
+            "button:has-text('I agree')",
+            "#L2AGLb",  # Common Google consent button
+        ]
+        
+        for selector in consent_selectors:
+            try:
+                button = await self._page.query_selector(selector)
+                if button:
+                    await button.click()
+                    await asyncio.sleep(1)
+                    return True
+            except Exception:
+                continue
+        
+        return False
 
     async def _navigate_with_retry(
         self,
@@ -449,38 +456,30 @@ class PlaywrightTrendsFetcher:
         # CRITICAL: Warm up session first to avoid 429
         await self._warmup_session()
         
-        # NEW STRATEGY: Use search box instead of direct URL navigation
-        # This avoids 429 errors on the explore page
-        success = await self._search_via_ui(keywords[0], geo)
-        
-        if not success:
-            # Fallback: Try direct navigation with careful timing
-            await self._page.set_extra_http_headers({
-                "Referer": "https://trends.google.com/trending?geo=US",
-                "Origin": "https://trends.google.com",
-            })
+        # Navigate to explore page
+        from urllib.parse import quote
+        query = ",".join(quote(kw) for kw in keywords)
+        url = f"{self.BASE_URL}/trends/explore?geo={geo}&q={query}&hl={self.config.hl}"
 
-            from urllib.parse import quote
-            query = ",".join(quote(kw) for kw in keywords)
-            url = f"{self.BASE_URL}/trends/explore?geo={geo}&q={query}&hl={self.config.hl}"
-
-            await asyncio.sleep(random.uniform(3, 5))
-
-            try:
-                response = await self._page.goto(
-                    url,
-                    wait_until="networkidle",
-                    timeout=self.config.timeout,
-                )
-                
-                if response and response.status == 429:
-                    # 429 error - data will be empty
-                    pass
-            except Exception:
-                pass
-        
-        # Wait for data to load
-        await asyncio.sleep(random.uniform(5, 8))
+        try:
+            response = await self._page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=self.config.timeout,
+            )
+            
+            # Accept cookie consent again if it appears on explore page
+            await self._accept_cookie_consent()
+            
+            # Wait for AngularJS app to initialize and load data
+            await asyncio.sleep(random.uniform(5, 8))
+            
+            # Try to trigger data loading by scrolling
+            await self._page.evaluate("window.scrollBy(0, 300)")
+            await asyncio.sleep(2)
+            
+        except Exception:
+            pass
 
         results: dict[str, list[InterestDataPoint]] = {kw: [] for kw in keywords}
 

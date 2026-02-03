@@ -24,7 +24,10 @@ from playwright_fetcher import PlaywrightTrendsFetcher, FetcherConfig
 
 def output_json(data: dict) -> None:
     """Output JSON to stdout."""
-    print(json.dumps(data, ensure_ascii=False))
+    import sys
+    # Use ensure_ascii=True to avoid encoding issues on Windows
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    print(json.dumps(data, ensure_ascii=True))
 
 
 def output_error(message: str) -> None:
